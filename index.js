@@ -296,7 +296,7 @@ async function run() {
     // payments CRUD
     // ====================
     app.get("/payments", async (req, res) => {
-      const email = req.query.email;
+      const email = req.query.email.toLowerCase();
       const page = Number(req.query.page) || 1;
       const limit = 5;
 
