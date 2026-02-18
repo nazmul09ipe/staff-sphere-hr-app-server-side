@@ -3,7 +3,7 @@ const express = require("express");
 const cors = require("cors");
 const jwt = require("jsonwebtoken");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-const admin = require("firebase-admin");
+// const admin = require("firebase-admin");
 require("dotenv").config();
 
 const app = express();
@@ -24,10 +24,10 @@ const client = new MongoClient(uri, {
 });
 
 // Initialize Firebase Admin
-const serviceAccount = require("./firebase-admin.json");
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+// const serviceAccount = require("./firebase-admin.json");
+// admin.initializeApp({
+//   credential: admin.credential.cert(serviceAccount),
+// });
 
 // Server & Routes
 async function run() {
