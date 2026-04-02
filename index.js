@@ -1,20 +1,105 @@
-// server.js
 const express = require("express");
 const cors = require("cors");
-const jwt = require("jsonwebtoken");
+const cookieParser = require("cookie-parser");
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
-// const admin = require("firebase-admin");
+const admin = require("firebase-admin");
 require("dotenv").config();
+
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
 const app = express();
 const port = process.env.PORT || 5000;
 
-// Middleware
-app.use(cors());
-app.use(express.json());
+// ================= FIREBASE ADMIN =================
+const serviceAccount = require("./firebase-admin.json");
 
-// MongoDB connection
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
+
+// ================= MIDDLEWARE =================
+app.use(
+  cors({
+    origin: "http://localhost:5173",
+    credentials: true,
+  }),
+);
+
+app.use(express.json());
+app.use(cookieParser());
+
+// ================= VERIFY TOKEN =================
+const verifyFirebaseToken = async (req, res, next) => {
+  const token = req.cookies?.token;
+
+  if (!token) {
+    return res.status(401).send({ message: "Unauthorized" });
+  }
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+    req.user = decoded;
+    next();
+  } catch (error) {
+    return res.status(403).send({ message: "Forbidden" });
+  }
+};
+
+// ================= ROLE MIDDLEWARE =================
+const verifyAdmin = async (req, res, next) => {
+  const user = await usersCollection.findOne({ email: req.user.email });
+
+  if (!user || user.role !== "admin") {
+    return res.status(403).send({ message: "Admin only access" });
+  }
+
+  next();
+};
+
+const verifyHR = async (req, res, next) => {
+  const user = await usersCollection.findOne({ email: req.user.email });
+
+  if (!user || user.role !== "hr") {
+    return res.status(403).send({ message: "HR only access" });
+  }
+
+  next();
+};
+
+// ================= LOGIN =================
+app.post("/login", async (req, res) => {
+  const { token } = req.body;
+
+  try {
+    const decoded = await admin.auth().verifyIdToken(token);
+
+    res.cookie("token", token, {
+      httpOnly: true,
+      secure: false, // true in production
+      sameSite: "strict",
+      maxAge: 7 * 24 * 60 * 60 * 1000,
+    });
+
+    res.send({ success: true, uid: decoded.uid });
+  } catch (error) {
+    res.status(401).send({ message: "Unauthorized" });
+  }
+});
+
+// ================= LOGOUT =================
+app.post("/logout", (req, res) => {
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: false, // true in production
+    sameSite: "none",
+  });
+
+  res.send({ success: true });
+});
+
+// ================= MONGODB =================
 const uri = `mongodb+srv://${process.env.DB_USER}:${process.env.DB_PASS}@cluster0.pca4tsp.mongodb.net/?appName=Cluster0`;
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -22,12 +107,6 @@ const client = new MongoClient(uri, {
     deprecationErrors: true,
   },
 });
-
-// Initialize Firebase Admin
-// const serviceAccount = require("./firebase-admin.json");
-// admin.initializeApp({
-//   credential: admin.credential.cert(serviceAccount),
-// });
 
 // Server & Routes
 async function run() {
@@ -78,9 +157,9 @@ async function run() {
     // server.js
 
     // GET /admin/employees with pagination
-    app.get("/admin/employees", async (req, res) => {
+    app.get("/admin/employees", verifyFirebaseToken, async (req, res) => {
       const page = parseInt(req.query.page) || 1;
-      const limit = parseInt(req.query.limit) || 8;
+      const limit = parseInt(req.query.limit) || 10;
       const skip = (page - 1) * limit;
 
       const query = { isFired: false }; // only hide fired users
@@ -101,31 +180,41 @@ async function run() {
       });
     });
 
-    app.patch("/users/make-hr/:id", async (req, res) => {
-      const id = req.params.id;
+    app.patch(
+      "/users/make-hr/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
 
-      const result = await usersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { role: "hr" } },
-      );
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { role: "hr" } },
+        );
 
-      res.send(result);
-    });
-    app.patch("/users/fire/:id", async (req, res) => {
-      const id = req.params.id;
+        res.send(result);
+      },
+    );
+    app.patch(
+      "/users/fire/:id",
+      verifyFirebaseToken,
+      verifyAdmin,
+      async (req, res) => {
+        const id = req.params.id;
 
-      const result = await usersCollection.updateOne(
-        { _id: new ObjectId(id) },
-        { $set: { isFired: true } },
-      );
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { isFired: true } },
+        );
 
-      res.send(result);
-    });
+        res.send(result);
+      },
+    );
 
     // GET employees by role
 
     // Get a single employee and their payroll history
-    app.get("/users/:email", async (req, res) => {
+    app.get("/users/:email", verifyFirebaseToken, async (req, res) => {
       try {
         const email = req.params.email;
 
@@ -159,7 +248,7 @@ async function run() {
         res.status(500).send({ message: "Server error" });
       }
     });
-    app.get("/users/role", async (req, res) => {
+    app.get("/users/role", verifyFirebaseToken, async (req, res) => {
       const email = req.query.email;
 
       if (!email) {
@@ -175,10 +264,10 @@ async function run() {
       res.send({ role: user.role });
     });
 
-    app.get("/users", async (req, res) => {
+    app.get("/users", verifyFirebaseToken, async (req, res) => {
       const role = req.query.role;
       const page = Number(req.query.page) || 1;
-      const limit = Number(req.query.limit) || 8;
+      const limit = Number(req.query.limit) || 10;
 
       let query = {};
       if (role) query.role = role;
@@ -209,7 +298,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/users/verify/:id", async (req, res) => {
+    app.patch("/users/verify/:id", verifyFirebaseToken, async (req, res) => {
       const id = req.params.id;
       const { isVerified } = req.body;
 
@@ -224,7 +313,7 @@ async function run() {
     // works CRUD
     // ====================
 
-    app.post("/works", async (req, res) => {
+    app.post("/works", verifyFirebaseToken, async (req, res) => {
       const work = req.body;
 
       const user = await usersCollection.findOne({ email: work.email });
@@ -249,7 +338,7 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/works/:id", async (req, res) => {
+    app.delete("/works/:id", verifyFirebaseToken, async (req, res) => {
       const id = req.params.id;
 
       const result = await worksCollection.deleteOne({
@@ -259,7 +348,7 @@ async function run() {
       res.send(result);
     });
 
-    app.patch("/works/:id", async (req, res) => {
+    app.patch("/works/:id", verifyFirebaseToken, async (req, res) => {
       const id = req.params.id;
       const editItem = req.body;
 
@@ -276,7 +365,7 @@ async function run() {
       res.send(result);
     });
 
-    app.get("/works", async (req, res) => {
+    app.get("/works", verifyFirebaseToken, async (req, res) => {
       const { email, month } = req.query;
 
       let query = {};
@@ -295,18 +384,26 @@ async function run() {
     // ===================
     // payments CRUD
     // ====================
-    app.get("/payments", async (req, res) => {
-      const email = req.query.email.toLowerCase();
+    app.get("/payments", verifyFirebaseToken, async (req, res) => {
+      const email = req.query.email;
       const page = Number(req.query.page) || 1;
-      const limit = 5;
+      const limit = parseInt(req.query.limit) || 10; // default 10
 
       const skip = (page - 1) * limit;
 
-      const total = await paymentsCollection.countDocuments({ email });
+      let query = {};
+
+      // ✅ If email exists → employee view
+      if (email) {
+        query.email = email;
+      }
+
+      // ✅ Admin → no filter (get all payments)
+      const total = await paymentsCollection.countDocuments(query);
 
       const payments = await paymentsCollection
-        .find({ email })
-        .sort({ createdAt: 1 })
+        .find(query)
+        .sort({ createdAt: -1 }) // ✅ IMPORTANT (latest first)
         .skip(skip)
         .limit(limit)
         .toArray();
@@ -316,7 +413,7 @@ async function run() {
         total,
       });
     });
-    app.get("/admin/payments", async (req, res) => {
+    app.get("/admin/payments", verifyFirebaseToken, async (req, res) => {
       const result = await payrollCollection
         .find({ paid: { $ne: true } }) // only pending approvals
         .sort({ createdAt: 1 })
@@ -328,50 +425,148 @@ async function run() {
     // ===================
     // payroll CRUD
     // ====================
-    app.post("/payroll", async (req, res) => {
-      const data = req.body;
-      const result = await payrollCollection.insertOne(data);
+    app.post("/payroll", verifyFirebaseToken, async (req, res) => {
+      let data = req.body;
+
+      const normalizedData = {
+        ...data,
+        employeeId: String(data.employeeId), // ✅ FIX IMPORTANT
+        month: data.month.trim(),
+        year: Number(data.year),
+      };
+
+      const existing = await payrollCollection.findOne({
+        employeeId: normalizedData.employeeId,
+        month: normalizedData.month,
+        year: normalizedData.year,
+      });
+
+      if (existing) {
+        return res.status(400).send({
+          message: "Salary already requested for this month & year",
+        });
+      }
+
+      const result = await payrollCollection.insertOne(normalizedData);
       res.send(result);
     });
-
-    app.post("/payments", async (req, res) => {
+    app.post("/payments", verifyFirebaseToken, async (req, res) => {
       const payment = req.body;
       const result = await paymentsCollection.insertOne(payment);
       res.send(result);
     });
 
-    app.get("/admin/payroll", async (req, res) => {
-      const result = await payrollCollection.find({}).toArray();
-      res.send({ payments: result });
+    app.get("/payroll/:employeeId", verifyFirebaseToken, async (req, res) => {
+      const employeeId = req.params.employeeId;
+
+      const data = await payrollCollection.find({ employeeId }).toArray();
+
+      res.send(data);
     });
 
-    app.patch("/admin/pay/:id", async (req, res) => {
+    app.get("/hr/payroll-summary", verifyFirebaseToken, async (req, res) => {
+      try {
+        const { month, year } = req.query;
+
+        const query = {
+          month,
+          year: Number(year),
+        };
+
+        const payrolls = await payrollCollection.find(query).toArray();
+
+        const paid = payrolls.filter((p) => p.paid);
+        const pending = payrolls.filter((p) => !p.paid);
+
+        const totalPaidAmount = paid.reduce(
+          (sum, p) => sum + Number(p.salary || 0),
+          0,
+        );
+
+        res.send({
+          totalEmployeesPaid: paid.length,
+          totalPending: pending.length,
+          totalPaidAmount,
+          totalRequests: payrolls.length,
+        });
+      } catch (err) {
+        res.status(500).send({ message: "Failed to load summary" });
+      }
+    });
+
+    app.get("/admin/payroll", verifyFirebaseToken, async (req, res) => {
+      const page = parseInt(req.query.page) || 1;
+      const limit = parseInt(req.query.limit) || 10;
+      const skip = (page - 1) * limit;
+
+      const { month, year } = req.query;
+
+      let query = {};
+
+      // ✅ HR dashboard filter support
+      if (month && year) {
+        query.month = month;
+        query.year = Number(year);
+      }
+
+      const total = await payrollCollection.countDocuments(query);
+
+      const payments = await payrollCollection
+        .find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .toArray();
+
+      res.send({
+        payments,
+        total,
+        page,
+        totalPages: Math.ceil(total / limit),
+      });
+    });
+
+    app.patch("/admin/pay/:id", verifyFirebaseToken, async (req, res) => {
       const id = req.params.id;
+      const { transactionId } = req.body;
+
+      if (!transactionId) {
+        return res.status(400).send({
+          message: "Transaction ID is required",
+        });
+      }
 
       const payroll = await payrollCollection.findOne({
         _id: new ObjectId(id),
       });
 
-      if (!payroll) return res.send({});
+      if (!payroll) {
+        return res.status(404).send({ message: "Payroll not found" });
+      }
 
       if (payroll.paid) {
         return res.send({ message: "Already paid" });
       }
 
+      // ✅ Save payment history
       await paymentsCollection.insertOne({
         email: payroll.email,
+        name: payroll.name,
+        employeeId: payroll.employeeId,
         month: payroll.month,
         year: payroll.year,
         salary: payroll.salary,
-        transactionId: "TXN" + Date.now(),
+        transactionId: transactionId, // ✅ MUST be real
         createdAt: new Date(),
       });
 
+      // ✅ Update payroll with transactionId too (IMPORTANT)
       const result = await payrollCollection.updateOne(
         { _id: new ObjectId(id) },
         {
           $set: {
             paid: true,
+            transactionId: transactionId, // ✅ ADD THIS
             paymentDate: new Date(),
           },
         },
@@ -379,6 +574,64 @@ async function run() {
 
       res.send(result);
     });
+    // ===================
+    // HR summary (NEW)
+    // ===================
+    app.get("/hr/work-summary", verifyFirebaseToken, async (req, res) => {
+      try {
+        const { month } = req.query;
+
+        let query = {};
+        if (month) {
+          query.month = month;
+        }
+
+        const works = await worksCollection.find(query).toArray();
+
+        const totalHours = works.reduce(
+          (sum, work) => sum + (work.hours || 0),
+          0,
+        );
+
+        res.send({ totalHours });
+      } catch (error) {
+        console.error("HR work summary error:", error);
+        res.status(500).send({ message: "Failed to fetch work summary" });
+      }
+    });
+
+    // ===================
+    // STRIPE PAYMENT INTENT
+    // ===================
+    app.post(
+      "/create-payment-intent",
+      verifyFirebaseToken,
+      async (req, res) => {
+        try {
+          const { salary, payrollId } = req.body;
+
+          // ✅ convert to cents
+          const amount = parseInt(salary) * 100;
+
+          const paymentIntent = await stripe.paymentIntents.create({
+            amount: amount,
+            currency: "usd",
+
+            // optional but useful
+            metadata: {
+              payrollId: payrollId,
+            },
+          });
+
+          res.send({
+            clientSecret: paymentIntent.client_secret,
+          });
+        } catch (error) {
+          console.error("Stripe Error:", error);
+          res.status(500).send({ error: error.message });
+        }
+      },
+    );
 
     // Root
     app.get("/", (req, res) => res.send("NC Group Backend Running..."));
