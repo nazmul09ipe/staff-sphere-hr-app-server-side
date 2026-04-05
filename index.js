@@ -21,8 +21,8 @@ admin.initializeApp({
 app.use(
   cors({
     origin: [
-      "http://localhost:5173",
-      "https://assignment-12-client.vercel.app" // 🔥 replace with your real frontend URL
+      "https://assignment-12-serverside-one.vercel.app",
+      "https://staff-sphere-hr-management-app.web.app" // 🔥 replace with your real frontend URL
     ],
     credentials: true,
   })
