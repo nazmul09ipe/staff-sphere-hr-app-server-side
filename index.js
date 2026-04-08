@@ -21,8 +21,8 @@ admin.initializeApp({
 app.use(
   cors({
     origin: [
-      "https://assignment-12-serverside-one.vercel.app",
-      "https://staff-sphere-hr-management-app.web.app" // 
+      "https://staff-sphere-hr-management-app.web.app",
+      
     ],
     credentials: true,
   })
